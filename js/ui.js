@@ -46,6 +46,48 @@
     try { var v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; }
   }
 
+  /* 断点续玩：整局存进 localStorage，关掉浏览器再打开能接着玩。
+     改动了存档格式 / 摆牌规则时，把 SAVE_V 加一，旧存档自动作废。 */
+  var SAVE_KEY = 'mlm.save';
+  var SAVE_V = 1;
+
+  function readSave() {
+    var raw = load(SAVE_KEY, '');
+    if (!raw) return null;
+    try {
+      var d = JSON.parse(raw);
+      if (!d || d.v !== SAVE_V) return null;
+      if (!d.cards || !d.cards.length || d.cards.length > 2000) return null;
+      if (!d.cfg || !d.bounds || !d.tools) return null;
+      if (d.status !== 'playing') return null;   // 死局/通关不留档，重开这一局
+      if (!(d.level >= 1)) return null;
+      var p = d.cards[0];                        // 粗查一下格式，坏了就重开
+      if (!p || p.length !== 5 || typeof p[0] !== 'number' || typeof p[1] !== 'number') return null;
+      if (typeof d.bounds.w !== 'number' || !(d.bounds.w > 0)) return null;
+      return d;
+    } catch (e) { return null; }
+  }
+
+  var saveTimer = 0;
+
+  function writeSave() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+    var g = S.game;
+    if (!g) return;
+    if (g.status !== 'playing') { store(SAVE_KEY, ''); return; }
+    try {
+      var d = g.save();
+      d.v = SAVE_V;
+      store(SAVE_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
+  /* 点一下存一次太浪费，攒 350ms 写一次；离开页面前会强制写 */
+  function saveGame() {
+    if (saveTimer) return;
+    saveTimer = setTimeout(writeSave, 350);
+  }
+
   /* ---------------- 音效（纯代码合成，不用音频文件） ---------------- */
   var AU = {
     ctx: null,
@@ -349,12 +391,12 @@
   }
 
   /* ---------------- 关卡 ---------------- */
-  function startLevel(level) {
+  function startLevel(level, restored) {
     closeModal();
-    S.level = Math.max(1, level | 0);
+    S.level = Math.max(1, (restored && restored.level) || (level | 0));
     store('mlm.level', S.level);
     S.busy = false;
-    S.game = E.create(S.level, S.types);
+    S.game = restored ? E.restore(restored) : E.create(S.level, S.types);
 
     renderHUD();
     el.board.style.transition = 'none';
@@ -365,6 +407,7 @@
     renderBoard();      // 再摆牌（每张一次到位）
     renderSlots();
     renderTools();
+    writeSave();        // 新局立刻存档，下次打开接着玩
   }
 
   function nextLevel() {
@@ -406,6 +449,7 @@
   function die() {
     sfx('lose');
     vibrate([36, 70, 46]);
+    writeSave();        // 死局不留档：下次打开就是重开这一局
     if (!S.game.revived) showRevive();
     else showGameOver();
   }
@@ -552,6 +596,7 @@
     renderBoard();
     renderSlots();
     renderTools();
+    writeSave();
     sfx('tool');
     toast('复活成功！猫窝清出 3 个位子');
   }
@@ -606,6 +651,7 @@
     renderBoard();
     renderSlots();
     renderTools();
+    saveGame();
     fly(fromRect, toRect, card.type);
 
     if (res.matched.length) {
@@ -641,6 +687,7 @@
     }
     sfx('tool');
     renderBoard(); renderSlots(); renderTools();
+    saveGame();
     popIds(r.moved);
     toast('把 ' + r.moved.length + ' 张放回牌桌啦，还能再点');
   });
@@ -655,6 +702,7 @@
     }
     sfx('tool');
     renderBoard(); renderSlots(); renderTools();
+    saveGame();
     popIds([r.card]);
   });
 
@@ -668,6 +716,7 @@
     }
     sfx('tool');
     renderBoard();
+    saveGame();
     var kids = el.board.children;
     for (var i = 0; i < kids.length; i++) kids[i].classList.add('pop');
     setTimeout(function () {
@@ -779,8 +828,20 @@
     }, { once: true });
 
     probeAll().then(function () {
-      startLevel(S.level);
+      var saved = readSave();
+      if (saved) {
+        startLevel(saved.level, saved);
+        setTimeout(function () { toast('接着上次那局继续~'); }, 700);
+      } else {
+        startLevel(S.level);
+      }
       if (load('mlm.help', '') !== 'done') setTimeout(openHelp, 260);
+    });
+
+    // 切后台 / 关页面前强制存一次（免得 350ms 的那次还没落盘）
+    window.addEventListener('pagehide', writeSave);
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) writeSave();
     });
 
     var rt = null;

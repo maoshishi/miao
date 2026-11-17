@@ -424,8 +424,67 @@ window.MLM_ENGINE = (function () {
     return { ok: true, moved: moved };
   };
 
+  /* ---------------- 四、存档 / 读档（关掉浏览器还能接着玩） ---------------- */
+  Game.prototype.save = function () {
+    var packs = [];
+    for (var i = 0; i < this.cards.length; i++) {
+      var c = this.cards[i];
+      // [图案, x, y, 层, 状态] —— 用短数组省空间，336 张约 13KB
+      // 坐标必须存全精度：错半张的牌是靠「有没有重叠」判定的，四舍五入会算错
+      packs.push([c.type, c.x, c.y, c.layer, c.state]);
+    }
+    var slotIds = [];
+    for (var s = 0; s < this.slots.length; s++) slotIds.push(this.slots[s].id);
+    return {
+      level: this.level,
+      cfg: this.cfg,
+      typeCount: this.typeCount,
+      bounds: this.bounds,
+      tools: { out: this.tools.out, undo: this.tools.undo, shuffle: this.tools.shuffle },
+      status: this.status,
+      revived: !!this.revived,
+      slotIds: slotIds,
+      cards: packs
+    };
+  };
+
+  function restore(d) {
+    var g = Object.create(Game.prototype);
+    g.level = d.level;
+    g.cfg = d.cfg;
+    g.typeCount = d.typeCount;
+    g.bounds = d.bounds;
+    g.tools = {
+      out: d.tools.out | 0,
+      undo: d.tools.undo | 0,
+      shuffle: d.tools.shuffle | 0
+    };
+    g.status = 'playing';
+    g.revived = !!d.revived;
+    g.solution = [];
+
+    var cards = [];
+    for (var i = 0; i < d.cards.length; i++) {
+      var p = d.cards[i];
+      cards.push({
+        id: i, type: p[0], x: p[1], y: p[2], layer: p[3],
+        state: p[4], from: 'board'
+      });
+    }
+    g.cards = cards;
+
+    g.slots = [];
+    var ids = d.slotIds || [];
+    for (var k = 0; k < ids.length; k++) {
+      var c = cards[ids[k]];
+      if (c && c.state === 'slot') g.slots.push(c);
+    }
+    return g;
+  }
+
   return {
     create: function (level, typeIds) { return new Game(level, typeIds); },
+    restore: restore,
     generate: generate
   };
 })();
