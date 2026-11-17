@@ -4,6 +4,12 @@
    ========================================================== */
 window.MLM_CONFIG = {
 
+  /* 版本号：每次发版 +1。
+     要和 index.html 的 <meta name="mlm-version" content="9">、sw.js 里的
+     var V = 'mlm-v9'、以及 index.html 里所有 ?v=9 保持一致（数字对上就行）。
+     页面加载完会自动比对服务器上的版本，发现更新就自己重载一次。 */
+  VERSION: 9,
+
   /* 猫窝位置数：满了就“猫窝已满” */
   SLOT_COUNT: 7,
 

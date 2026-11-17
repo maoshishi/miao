@@ -37,7 +37,9 @@
     imgSrc: {},
     sound: true,
     vibrate: true,
-    busy: false
+    busy: false,
+    stale: 0,          // 服务端有更新的版本号（0 = 没有）
+    serverVersion: 0
   };
 
   /* ---------------- 存档 ---------------- */
@@ -86,6 +88,98 @@
   function saveGame() {
     if (saveTimer) return;
     saveTimer = setTimeout(writeSave, 350);
+  }
+
+  /* ---------------- 存储 / 版本自检 ---------------- */
+  function storageOK() {
+    try {
+      localStorage.setItem('mlm.__probe', '1');
+      localStorage.removeItem('mlm.__probe');
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function saveSummary() {
+    var raw = load(SAVE_KEY, '');
+    if (!raw) return '无（下次打开是新的一局）';
+    try {
+      var d = JSON.parse(raw);
+      var left = 0;
+      for (var i = 0; i < d.cards.length; i++) if (d.cards[i][4] === 'board') left++;
+      return '有 · 第 ' + d.level + ' 局 · 桌面还剩 ' + left + ' 张';
+    } catch (e) { return '读取失败'; }
+  }
+
+  /* ---------------- 版本 / 自动更新 ---------------- */
+  /* 服务端版本号写在 index.html 的 <meta name="mlm-version" content="9"> 里
+     （读不到就退回读 sw.js 第一行的 'mlm-v9'）。
+     微信内置浏览器缓存特别凶，所以这里做两件事：
+       1. 一进来就发现服务器更新了 → 自动带个 ?r= 参数重载一次，**用户不用改链接**；
+       2. 玩到一半才发现更新 → 顶上顶一条黄色提示，玩家自己点。 */
+  function fetchServerVersion() {
+    if (typeof fetch !== 'function') return Promise.resolve(0);
+    var base = location.href.split('#')[0].split('?')[0].replace(/[^\/]*$/, '');
+    return fetch(base + 'index.html?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (txt) {
+        var m = /mlm-version"\s+content="(\d+)"/.exec(txt || '');
+        if (m) return +m[1];
+        return fetch(base + 'sw.js?t=' + Date.now(), { cache: 'no-store' })
+          .then(function (r) { return r.text(); })
+          .then(function (t) {
+            var s = /mlm-v(\d+)/.exec(t || '');
+            return s ? +s[1] : 0;
+          });
+      });
+  }
+
+  function checkVersion(auto) {
+    fetchServerVersion().then(function (server) {
+      if (!server) return;
+      S.serverVersion = server;
+      if (server <= (C.VERSION | 0)) { hideStale(); return; }
+      if (auto && canAutoReload(server)) { forceUpdate(); return; }
+      showStale(server);
+    }).catch(function () {});
+  }
+
+  /* 同一个版本只自动重载一次，避免来回死循环 */
+  function canAutoReload(server) {
+    try {
+      if (sessionStorage.getItem('mlm.reloaded') === String(server)) return false;
+      sessionStorage.setItem('mlm.reloaded', String(server));
+      return true;
+    } catch (e) { return true; }
+  }
+
+  /* 内部带时间戳重载：地址栏会变成 ?r=xxx，但用户不用做任何事，分享出去的链接也不变 */
+  function forceUpdate() {
+    writeSave();                     // 先把这局进度存好
+    toast('发现新版本，正在更新…', 1600);
+    setTimeout(function () {
+      var base = location.href.split('#')[0].split('?')[0];
+      location.replace(base + '?r=' + Date.now());
+    }, 320);
+  }
+
+  function showStale(server) {
+    S.stale = server;
+    var bar = document.getElementById('staleBar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'staleBar';
+      bar.className = 'stale-bar';
+      bar.innerHTML = '<span>有新版本 v' + server + ' 啦</span><button type="button">刷新</button>';
+      document.body.appendChild(bar);
+      bar.querySelector('button').addEventListener('click', forceUpdate);
+    }
+    requestAnimationFrame(function () { bar.classList.add('show'); });
+  }
+
+  function hideStale() {
+    S.stale = 0;
+    var bar = document.getElementById('staleBar');
+    if (bar) bar.classList.remove('show');
   }
 
   /* ---------------- 音效（纯代码合成，不用音频文件） ---------------- */
@@ -752,11 +846,16 @@
       '<h2>设置</h2>' +
       '<div class="setting"><span>音效</span><button class="switch ' + (S.sound ? 'on' : '') + '" data-act="sound"></button></div>' +
       '<div class="setting"><span>震动</span><button class="switch ' + (S.vibrate ? 'on' : '') + '" data-act="vibe"></button></div>' +
+      '<div class="setting"><span>版本</span><span style="font-size:13px;color:#8a7357">v' + (C.VERSION | 0) +
+        (S.stale ? ' · <b style="color:#c1440e">服务端已有 v' + S.stale + '</b>' : '') + '</span></div>' +
+      '<div class="setting"><span>本局存档</span><span style="font-size:13px;color:#8a7357;text-align:right">' +
+        (storageOK() ? saveSummary() : '<b style="color:#c1440e">浏览器禁用了本地存储</b>') + '</span></div>' +
       '<div class="setting"><span>卡牌素材</span><span style="font-size:13px;color:#8a7357">已就绪 <b style="color:#3f9c3f">' + loadedCount + '</b> / ' + C.MAX_TYPES + '</span></div>' +
       '<div class="material-list">' + chips + '</div>' +
       '<p class="mat-hint">缺图的卡会显示成文字方块，不影响玩<br>补图方法见 README：把图丢进 picture/ → 运行 python tools/prepare-cards.py</p>' +
       '<button class="btn orange" data-act="retry">重开本局</button>' +
       '<button class="btn ghost" data-act="first">从第 1 局重新开始</button>' +
+      '<button class="btn ghost" data-act="checkver">检查更新</button>' +
       '<button class="btn ghost" data-act="close">关闭</button>'
     );
 
@@ -775,6 +874,15 @@
       },
       retry: function () { closeModal(); startLevel(S.level); },
       first: function () { closeModal(); startLevel(1); },
+      checkver: function (b) {
+        b.textContent = '检查中…';
+        fetchServerVersion().then(function (server) {
+          if (server > (C.VERSION | 0)) { forceUpdate(); return; }
+          b.textContent = '已是最新版 v' + (C.VERSION | 0);
+        }).catch(function () {
+          b.textContent = '检查失败，稍后再试';
+        });
+      },
       close: closeModal
     });
   }
@@ -838,11 +946,14 @@
       if (load('mlm.help', '') !== 'done') setTimeout(openHelp, 260);
     });
 
-    // 切后台 / 关页面前强制存一次（免得 350ms 的那次还没落盘）
+    // 切后台 / 关页面前强制存一次（免得 350ms 的那次还没落盘）；
+    // 回到前台时顺手看一眼服务端有没有新版本
     window.addEventListener('pagehide', writeSave);
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) writeSave();
+      if (document.hidden) { writeSave(); return; }
+      checkVersion(false);
     });
+    checkVersion(true);     // 刚打开就自动检查，旧的话自动重载一次（不用改链接）
 
     var rt = null;
     window.addEventListener('resize', function () {
@@ -874,7 +985,7 @@
   }
 
   // 调试用（控制台里可以 __MLM 看状态），不影响游戏
-  window.__MLM = { state: S, startLevel: startLevel, config: C };
+  window.__MLM = { state: S, startLevel: startLevel, config: C, checkVersion: checkVersion, save: writeSave };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
